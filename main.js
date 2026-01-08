@@ -1,15 +1,19 @@
 const bedrock = require("bedrock-protocol");
 const { randomUUID } = require("crypto");
+const fs = require("fs");
+
+// Load config
+const config = JSON.parse(fs.readFileSync("./config.json", "utf8"));
 
 // DonutSMP target
-const HOST = "donutsmp.net";
-const PORT = 19132;
-const VERSION = "1.21.130";
-const USERNAME = "rexusgeming";
+const HOST = config.server.host;
+const PORT = config.server.port;
+const VERSION = config.server.version;
+const USERNAME = config.auth.username;
 
 // Scenario target
-const TARGET_COMMAND = "/tpa";
-const TARGET_SLOT_INDEX = 16; // 0-based
+const TARGET_COMMAND = config.behavior.targetCommand;
+const TARGET_SLOT_INDEX = config.behavior.slotIndex; // 0-based
 
 let desiredTakeSlotIndex = TARGET_SLOT_INDEX;
 let containerItemsDumpedForWindow = null;
@@ -58,6 +62,7 @@ let reconnectTimer = null;
 let reconnectAttempt = 0;
 let pendingReconnectReason = null;
 let pendingReconnectDelayMs = null;
+let userInitiatedConnect = false; // Track if user used 'connect' command
 
 const RECONNECT_BASE_MS = 2000;
 const RECONNECT_MAX_MS = 60000;
@@ -70,14 +75,20 @@ function clearReconnectTimer() {
 }
 
 function scheduleReconnect(reason, delayMs) {
+    // Only auto-reconnect if user initiated connect AND config allows it
+    if (!userInitiatedConnect || !config.behavior.autoReconnect) {
+        console.log(`[reconnect] disabled - user must reconnect manually`);
+        return;
+    }
     if (!wantConnected) return;
     if (client) return; // already connected/connecting
     if (reconnectTimer) return; // already scheduled
 
     const attempt = reconnectAttempt;
+    const configDelay = config.behavior.reconnectDelayMs || RECONNECT_BASE_MS;
     const base = Math.min(
         RECONNECT_MAX_MS,
-        RECONNECT_BASE_MS * Math.pow(2, Math.min(attempt, 6))
+        configDelay * Math.pow(2, Math.min(attempt, 6))
     );
     const jitter = Math.floor(Math.random() * 500);
     const wait = Math.max(250, (delayMs ? ? base) + jitter);
@@ -146,6 +157,11 @@ const EMPTY_ITEM = { network_id: 0 };
 function isEmptyItem(item) {
     if (!item) return true;
     return item.network_id === 0;
+}
+
+function stripMinecraftFormatting(text) {
+    if (typeof text !== "string") return text;
+    return text.replace(/§./g, "");
 }
 
 function findFirstEmptyPlayerSlot() {
@@ -474,6 +490,7 @@ function connectServer() {
 
   // Enable reconnect attempts after a manual connect.
   wantConnected = true;
+  userInitiatedConnect = true; // Mark as user-initiated
   clearReconnectTimer();
 
   console.log(
@@ -764,8 +781,13 @@ function connectServer() {
   // Optional: show chat
   client.on("text", (packet) => {
     if (packet?.message) {
-      const who = packet.source_name || "Server";
-      console.log(`💬 ${who}: ${packet.message}`);
+      const who = packet.source_name ? stripMinecraftFormatting(packet.source_name) : "Server";
+      const message = stripMinecraftFormatting(packet.message);
+      console.log(`💬 ${who}: ${message}`);
+      // Re-render prompt to keep > at bottom after incoming messages
+      if (rl && typeof rl.prompt === "function") {
+        rl.prompt(true);
+      }
     }
   });
 }
@@ -777,6 +799,7 @@ function disconnectServer() {
   }
   // Manual disconnect disables auto reconnect.
   wantConnected = false;
+  userInitiatedConnect = false; // Disable auto-reconnect
   clearReconnectTimer();
   console.log("[boot] disconnecting...");
   try {
@@ -795,6 +818,7 @@ const rl = readline.createInterface({
 });
 
 console.log("[boot] not connecting automatically. Type 'connect' to start.");
+console.log(`[boot] Auto-reconnect: ${config.behavior.autoReconnect ? 'enabled' : 'disabled'}`);
 setTimeout(() => rl.prompt(), 200);
 rl.on("line", (line) => {
   const input = line.trim();

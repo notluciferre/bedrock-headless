@@ -1,23 +1,35 @@
 {
-    "mode": "headless",
-    "server": {
-        "host": "donutsmp.net",
-        "port": 19132,
-        "version": "1.21.110",
-        "autoVersion": true
-    },
-    "auth": {
-        "username": "rexusgeming",
-        "offline": false
-    },
-    "behavior": {
-        "commandDelayMs": 5000,
-        "guiTimeoutMs": 10000,
-        "slotIndex": 16,
-        "targetCommand": "/tpa"
-    },
-    "debug": {
-        "logPackets": false,
-        "logStateChanges": true
-    }
+  "mode": "headless",
+  "server": {
+    "host": "asia.donutsmp.net",
+    "port": 19132,
+    "version": "1.21.110",
+    "autoVersion": true
+  },
+  "auth": {
+    "username": "rexusgeming",
+    "offline": false
+  },
+  "behavior": {
+    "commandDelayMs": 5000,
+    "guiTimeoutMs": 10000,
+    "slotIndex": 16,
+    "targetCommand": "/tpa",
+    "autoReconnect": true,
+    "reconnectDelayMs": 5000,
+    "pingTimeoutMs": 15000,
+    "pingIntervalMs": 30000
+  },
+  "orderDropper": {
+    "enabled": false,
+    "orderCommand": "/order",
+    "dropDelayMs": 100,
+    "cycleDelayMs": 2000,
+    "maxCycles": 100,
+    "targetSlots": [0, 1, 2, 3, 4, 5, 6, 7, 8]
+  },
+  "debug": {
+    "logPackets": false,
+    "logStateChanges": true
+  }
 }
