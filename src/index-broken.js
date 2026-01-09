@@ -18,7 +18,6 @@ let lastPongTime = null;
 let autoReconnectEnabled = false;
 let reconnecting = false;
 let rl = null;
-let lastAutoPingTime = 0; // Track auto ping vs manual ping
 
 // Logger functions
 function getTimestamp() {
@@ -30,16 +29,16 @@ function getTimestamp() {
 function log(level, message) {
     if (rl) {
         // Clear current line and move cursor to start
-        readline.clearLine(process.stdout, 0);
-        readline.cursorTo(process.stdout, 0);
+        process.stdout.clearLine(0);
+        process.stdout.cursorTo(0);
     }
     
     const timestamp = getTimestamp();
-    console.log(`[${timestamp}] [${level}]: ${message}`);
+    console.log(`[${level}] ${timestamp} - ${message}`);
     
     if (rl) {
-        // Redraw prompt without newline
-        process.stdout.write('> ');
+        // Redraw prompt
+        rl.prompt(true);
     }
 }
 
@@ -55,17 +54,12 @@ function logError(message) {
     log('ERROR', message);
 }
 
-function logServer(message) {
-    log('SERVER', message);
+function logChat(message) {
+    log('CHAT', message);
 }
 
 function logPing(message) {
     log('PING', message);
-}
-
-// Strip Minecraft color codes
-function stripMinecraftColors(text) {
-    return text.replace(/§[0-9a-zA-Z]/gi, '');
 }
 
 // Ping timeout checker with auto-reconnect
@@ -105,10 +99,7 @@ function startPingMonitor() {
 
         // Send ping command
         const pingCmd = config.ping.command || "ping";
-        // Silent ping - no log
-        lastAutoPingTime = Date.now(); // Mark as auto ping
-        execCommand(pingCmd, true); // true = silent mode
-        lastPingTime = now;
+        logPing(`Sending /${pingCmd}...`);
 
     }, config.ping.intervalMs);
 }
@@ -122,37 +113,35 @@ function stopPingMonitor() {
 
 async function connect() {
     if (connected) {
-        logWarn("Already connected");
+        console.log("[connect] Already connected");
+        return;
+    }logWarn("Already connected");
         return;
     }
- 
-    try {
-        logInfo(`Connecting to ${config.server.ip}:${config.server.port}...`);
 
-        const options = {
+    try {
+        logInfo(`Client({
             host: config.server.ip,
             port: config.server.port,
-            username: "rexusgeming",
-            offline: false,  // Set to false for Xbox authentication
+            username: "Player" + Math.floor(Math.random() * 1000),
+            offline: false, // Set to false for Xbox authentication
             skipPing: true,
             keepAlive: true,
-        };
-
-        client = bedrock.createClient(options);
+        });
 
         // Connection handlers
         client.on("spawn", () => {
             connected = true;
             lastPingTime = Date.now();
             lastPongTime = Date.now();
-            
+
             if (reconnecting) {
-                logInfo("✓ Reconnected successfully!");
+                console.log("[reconnect] ✓ Reconnected successfully!");
                 reconnecting = false;
             } else {
-                logInfo("✓ Connected!");
+                console.log("[connect] ✓ Connected!");
             }
-            
+
             // Enable auto-reconnect after first successful connect
             autoReconnectEnabled = true;
             startPingMonitor();
@@ -161,38 +150,29 @@ async function connect() {
         client.on("text", (packet) => {
             if (packet?.message) {
                 const msg = packet.message.toLowerCase();
-                const cleanMsg = stripMinecraftColors(packet.message);
+                logChat(packet.message);
 
-                if (msg.includes("your ping is")) {
-                    const now = Date.now();
-                    if (now - lastAutoPingTime < 2000) {
-                        // This is auto-ping response, skip it
-                        lastPongTime = Date.now();
-                        return;
-                    }
-                    // This is manual ping, show it
-                    logServer(cleanMsg);
-                    lastPongTime = Date.now();
-                    return;
-                }
-                
-                logServer(cleanMsg);
-                
                 // Update last pong time when we receive any text message
+                // (including potential ping responses)
                 lastPongTime = Date.now();
+
+                // Also check for common ping response patterns
+                if (msg.includes("pong") || msg.includes("ms") || msg.includes("ping")) {
+                    logPing("Pong received");
+                }
             }
-            
+
             // Show all text packet data (for debugging login links)
             if (packet?.type === "translation" && packet?.parameters) {
                 logInfo(`Translation: ${JSON.stringify(packet.parameters)}`);
             }
         });
-        
+
         // Handle server settings packet (may contain auth info)
         client.on("server_settings_response", (packet) => {
             logInfo(`Server settings: ${JSON.stringify(packet)}`);
         });
-        
+
         // Handle modal form (may contain login link)
         client.on("modal_form_request", (packet) => {
             logInfo(`Modal form: ${JSON.stringify(packet)}`);
@@ -215,12 +195,30 @@ async function connect() {
 
         client.on("error", (err) => {
             const msg = String(err?.message || err);
-            // Ignore harmless decode errors
+            // Suppress harmless decode errors from DonutSMP custom packets
             if (msg.includes('Read error') || msg.includes('Invalid tag')) {
+                // Silently ignore - these are expected with custom server packets
                 return;
             }
             logError(msg);
         });
+
+        // Suppress internal bedrock-protocol decoder errors
+        if (client._client?.serializer) {
+            const originalEmit = client._client.serializer.emit?.bind(client._client.serializer);
+            if (originalEmit) {
+                client._client.serializer.emit = function(event, ...args) {
+                    if (event === 'error') {
+                        const err = args[0];
+                        const msg = String(err?.message || err);
+                        if (msg.includes('Read error') || msg.includes('Invalid tag')) {
+                            return; // Suppress log spam
+                        }
+                    }
+                    return originalEmit(event, ...args);
+                };
+            }
+        }
 
         // Update pong time on any packet (server is responding)
         client.on("packet", () => {
@@ -263,14 +261,13 @@ function disconnect() {
     }
 
     logInfo("Disconnecting...");
-    
     // Disable auto-reconnect when user manually disconnects
     if (!reconnecting) {
         autoReconnectEnabled = false;
     }
-    
+
     stopPingMonitor();
-    
+
     if (client) {
         try {
             client.close();
@@ -279,13 +276,14 @@ function disconnect() {
         }
         client = null;
     }
-    
+
     connected = false;
 }
 
-function execCommand(command, silent = false) {
+function execCommand(command) {
     if (!connected || !client) {
-        if (!silent) logWarn("Not connected");
+        console.log("[exec] Not connected");
+        logWarn("Not connected");
         return;
     }
 
@@ -304,21 +302,14 @@ function execCommand(command, silent = false) {
             version: "52",
         });
         
-        if (!silent) {
-            logInfo(`Sent: ${cmd}`);
-        }
+        logInfo(`Sent: ${cmd}`);
     } catch (error) {
-        if (!silent) {
-            logError(`Command error: ${error.message}`);
-        }
+        logError(`Command error: ${error.message}`);
     }
 }
 
 // Console interface
 rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: "> ",
 });
 
 console.log("=".repeat(60));
@@ -350,11 +341,11 @@ rl.on("line", (line) => {
 
     // Exit
     if (cmd === "exit" || cmd === "quit") {
+        console.log("[exit] Shutting down...");
+        disconnect();
+        process.exit(0);
         logInfo("Shutting down...");
         disconnect();
-        if (rl) {
-            rl.close();
-        }
         process.exit(0);
         return;
     }
@@ -384,26 +375,16 @@ rl.on("line", (line) => {
         return;
     }
 
-    logWarn("Unknown command. Available: connect, disconnect, exec <command>, exit");
-    rl.prompt();
-});
-
+    logWarn("Unknown command. Available
 // Graceful shutdown
 process.on("SIGINT", () => {
-    console.log(""); // New line after ^C
-    logInfo("Shutting down...");
+    console.log("\n[exit] Shutting down...");
     disconnect();
-    if (rl) {
-        rl.close();
-    }
+    process.exit(0);
+});logInfo("Shutting down...");
+    disconnect();
     process.exit(0);
 });
 
 process.on("SIGTERM", () => {
-    logInfo("Shutting down...");
-    disconnect();
-    if (rl) {
-        rl.close();
-    }
-    process.exit(0);
-});
+    logInfo("
